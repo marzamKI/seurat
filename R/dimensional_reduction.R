@@ -1493,6 +1493,126 @@ RunUMAP.Seurat <- function(
   return(object)
 }
 
+#' Run diffusion map
+#'
+#' @param object Seurat object
+#' @param assay Assay used to calculate reduction.
+#' @param cells.use Which cells to analyze (default, all cells)
+#' @param dims.use Which dimensions to use as input features
+#' @param genes.use If set, run the diffusion map procedure on this subset of
+#' genes (instead of running on a set of reduced dimensions). Not set (NULL) by
+#' default
+#' @param reduction.use Which dimensional reduction to use for the
+#' diffusion map input. Default is PCA
+#' @param q.use Quantile to clip diffusion map components at. This addresses an issue where 1-2 cells will have extreme values that obscure all other points. 0.01 by default
+#' @param max.dim Max dimension to keep from diffusion calculation
+#' @param scale.clip Max/min value for scaled data. Default is 3
+#' @param reduction.name dimensional reduction name, specifies the position in the object@reductions list. dm by default
+#' @param reduction.key dimensional reduction key, specifies the string before the number for the dimension names. DM by default
+#' @param ... Additional arguments to the diffuse call
+#'
+#' @return Returns a Seurat object with a diffusion map
+#'
+#' @import destiny
+#' @importFrom stats dist quantile
+#'
+#' @export
+#'
+#' @examples
+#' pbmc_small
+#' # Run Diffusion on variable genes
+#' pbmc_small <- RunDiffusion(pbmc_small,genes.use = pbmc_small@var.genes)
+#' # Run Diffusion map on first 10 PCs
+#' pbmc_small <- RunDiffusion(pbmc_small,genes.use = pbmc_small@var.genes)
+#' # Plot results
+#' DiMPlot(pbmc_small, reduction = "dm")
+#'
+RunDiffusion <- function(
+  object,
+  assay = "RNA", #Add assay
+  cells.use = NULL,
+  dims.use = 1:5,
+  genes.use = NULL,
+  reduction.use = 'pca',
+  q.use = 0.01,
+  max.dim = 2,
+  scale.clip = 10,
+  reduction.name = "dm",
+  reduction.key = "DM",
+  ...
+) {
+  # Check for destiny
+  if (!'destiny' %in% rownames(x = installed.packages())) {
+    stop("Please install destiny - learn more at https://bioconductor.org/packages/release/bioc/html/destiny.html")
+  }
+  
+  SetIfNull <- function(x, default) { #Build deprecated SetIfNull()
+    if(is.null(x = x)){
+      return(default)
+    } else {
+      return(x)
+    }
+  }
+  
+  cells.use <- SetIfNull(x = cells.use, default = colnames(x = object@assays[[assay]]))
+   
+  if (is.null(x = genes.use)) {
+    dim.code <- Key(object = object[[reduction.use]]) #Get key from chosen dimensionality reduction
+    dim.codes <- paste0(dim.code, dims.use)
+    data.use <- FetchData(object = object, vars = dim.codes)
+  }
+  
+  if (! is.null(x = genes.use)) {
+    genes.use <- intersect(x = genes.use, y = rownames(x = object@assays[[assay]]))
+    data.use <- MinMax(
+      data = t(x = object@assays[[assay]][genes.use, cells.use]),
+      min = -1 * scale.clip,
+      max = scale.clip
+    )
+  }
+  
+  #parameters.to.store <- as.list(environment(), all = TRUE)[names(formals("RunDiffusion"))]
+  #object <- SetCalcParams(object = object,
+  #                        calculation = "RunDiffusion",
+  #                        ... = parameters.to.store)
+  
+  #data.dist <- dist(data.use) #Uses diffusionMap package (chosen in Seurat < 2.3.4)
+  #data.diffusion <- data.frame(
+  #  diffusionMap::diffuse(
+  #    D = data.dist,
+  #    neigen = max.dim,
+  #    maxdim = max.dim,
+  #    ...
+  #  )$X
+  #)
+  
+  data.dist <- dist(data.use) #Uses destiny package (preferred in Seurat 2.3.4)
+  data.diffusion <- data.frame(
+    destiny::DiffusionMap(data = as.matrix(data.dist),
+                          n_eigs = max.dim, ...)@eigenvectors
+  )
+  
+  colnames(x = data.diffusion) <- paste0(reduction.key, "_", 1:ncol(x = data.diffusion))
+  rownames(x = data.diffusion) <- cells.use
+  for (i in 1:max.dim) {
+    x <- data.diffusion[,i]
+    x <- MinMax(
+      data = x,
+      min = quantile(x = x, probs = q.use),
+      quantile(x = x, probs = 1-q.use)
+    )
+    data.diffusion[, i] <- x
+  }
+  
+  object[[reduction.key]] <- CreateDimReducObject(
+    embeddings = as.matrix(data.diffusion),
+    key = reduction.key,
+    assay = assay
+  )
+
+  return(object)
+}
+
 #' @param dims Which dimensions to examine
 #' @param score.thresh Threshold to use for the proportion test of PC
 #' significance (see Details)
